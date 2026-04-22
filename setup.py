@@ -29,6 +29,8 @@ setup(
     entry_points={
         'console_scripts': [
             'single_goal_nav = tb3_nav2_slam.single_goal_nav:main',
+            'single_goal_return = tb3_nav2_slam.single_goal_return:main',
+            'goal_from_list = tb3_nav2_slam.goal_from_list:main',
         ],
     },
 )
