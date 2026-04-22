@@ -3,6 +3,7 @@
 import math
 import sys
 import time
+
 # ============================================================
 # rclpy (ROS 2 Python Client Library) Explanation
 # ------------------------------------------------------------
@@ -14,22 +15,21 @@ import time
 # In this script, rclpy is used to:
 # - initialize the ROS 2 system → rclpy.init()
 # - allow the node to communicate with the ROS graph
+# - process AMCL subscription callbacks → rclpy.spin_once()
 # - cleanly shut everything down → rclpy.shutdown()
 #
-# Typical functions used (especially in this setup):
-# - rclpy.init() → starts ROS 2 communication (must be called first)
-# - rclpy.shutdown() → safely shuts down ROS 2 when done
-#
-# In more advanced nodes (not directly shown here), rclpy also supports:
-# - rclpy.spin(node) → keeps a node alive and processes callbacks
-# - rclpy.spin_once(node) → processes a single callback iteration
-# - rclpy.ok() → checks if ROS is still running
+# Typical functions used in this setup:
+# - rclpy.init() → starts ROS 2 communication
+# - rclpy.spin_once(node, timeout_sec=...) → processes one callback cycle
+# - rclpy.shutdown() → safely shuts down ROS 2
 #
 # In this Nav2 setup, BasicNavigator internally manages the node,
-# so we do NOT manually create a Node or call rclpy.spin(). Instead,
-# rclpy is mainly used to initialize and shut down the system.
+# so we do NOT manually create a separate Node. Instead, we use
+# the navigator itself to subscribe to /amcl_pose and to interact
+# with Nav2.
 # ============================================================
 import rclpy
+
 # ============================================================
 # PoseStamped Explanation
 # ------------------------------------------------------------
@@ -46,7 +46,8 @@ import rclpy
 # A regular Pose only includes position and orientation, but has
 # NO frame or timestamp, so Nav2 cannot correctly interpret it.
 # ============================================================
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+
 # ============================================================
 # BasicNavigator Explanation
 # ------------------------------------------------------------
@@ -59,11 +60,14 @@ from geometry_msgs.msg import PoseStamped
 # (SUCCEEDED, FAILED, CANCELED).
 #
 # This class supports multiple behaviors such as:
+# - setInitialPose() for localization initialization
 # - goToPose() for single goal navigation
 # - goThroughPoses() for waypoint navigation
 # - getPath() for planning only
 # ============================================================
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 
 
 # ============================================================
@@ -81,14 +85,24 @@ from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 #
 # This function converts a yaw angle (in radians) into the
 # quaternion components (z, w) required for PoseStamped.
-#
-# A regular yaw value cannot be used directly because ROS
-# messages do not have a yaw field — only quaternion format.
 # ============================================================
 def yaw_to_quaternion_z_w(yaw_rad: float):
     qz = math.sin(yaw_rad / 2.0)
     qw = math.cos(yaw_rad / 2.0)
     return qz, qw
+
+
+# ============================================================
+# Quaternion → Yaw Conversion
+# ------------------------------------------------------------
+# This converts a planar quaternion back into yaw in degrees.
+# It is used when AMCL already has a valid pose and we want to
+# reuse that pose instead of forcing a hardcoded start pose.
+# ============================================================
+def quaternion_z_w_to_yaw_deg(qz: float, qw: float) -> float:
+    yaw_rad = math.atan2(2.0 * qw * qz, 1.0 - 2.0 * qz * qz)
+    return math.degrees(yaw_rad)
+
 
 # ============================================================
 # build_pose Function Explanation
@@ -105,9 +119,6 @@ def yaw_to_quaternion_z_w(yaw_rad: float):
 #
 # PoseStamped is required because Nav2 needs both spatial context
 # (frame) and time (timestamp) to correctly interpret the goal.
-#
-# This function acts as a helper to standardize goal creation
-# before sending it to navigator.goToPose().
 # ============================================================
 def build_pose(navigator: BasicNavigator, x: float, y: float, yaw_deg: float) -> PoseStamped:
     pose = PoseStamped()
@@ -127,24 +138,71 @@ def build_pose(navigator: BasicNavigator, x: float, y: float, yaw_deg: float) ->
 
 
 # ============================================================
+# AMCL Pose Reader
+# ------------------------------------------------------------
+# This helper listens to /amcl_pose and stores the most recent
+# localized pose in the map frame. If AMCL is already localized,
+# we can reuse that pose instead of always forcing a hardcoded
+# initial pose like (0, 0, 0).
+# ============================================================
+class AmclPoseReader:
+    def __init__(self, navigator: BasicNavigator):
+        self.latest_amcl_pose: PoseWithCovarianceStamped | None = None
+
+        qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+
+        self.sub = navigator.create_subscription(
+            PoseWithCovarianceStamped,
+            '/amcl_pose',
+            self.callback,
+            qos,
+        )
+
+    def callback(self, msg: PoseWithCovarianceStamped) -> None:
+        self.latest_amcl_pose = msg
+
+    def wait_for_pose(self, navigator: BasicNavigator, timeout_sec: float = 2.0) -> bool:
+        start = time.time()
+
+        while time.time() - start < timeout_sec:
+            rclpy.spin_once(navigator, timeout_sec=0.1)
+            if self.latest_amcl_pose is not None:
+                return True
+
+        return False
+
+
+# ============================================================
 # main() Function Summary
 # ------------------------------------------------------------
-# This function initializes ROS 2, sets the robot’s starting
-# position (initial pose), and sends a navigation goal using
-# Nav2. It waits until the navigation stack is ready, then
-# commands the robot to move to a specified (x, y, yaw) goal.
+# This function initializes ROS 2, checks whether AMCL already
+# has a valid current pose, and then sends a navigation goal
+# using Nav2.
 #
-# While the robot is moving, it periodically checks for feedback
-# and waits until the task is complete. Once finished, it reports
-# whether the navigation succeeded, failed, or was canceled,
-# then shuts down the system cleanly.
+# Behavior:
+# - If /amcl_pose is already available, reuse the current
+#   localized pose instead of forcing a static initial pose.
+# - If /amcl_pose is not available, fall back to the known
+#   starting pose at (0.0, 0.0, 0.0).
+#
+# This makes repeated runs safer because the script does not
+# blindly reset localization back to the original start pose
+# after the robot has already moved.
 # ============================================================
 def main():
-    # Initialize ROS 2 system (must be called before using ROS)
+    # Initialize ROS 2 system
     rclpy.init()
 
-    # Create a high-level Nav2 controller object
+    # Create high-level Nav2 controller object
     navigator = BasicNavigator()
+
+    # Create AMCL reader so we can check if localization already exists
+    amcl_reader = AmclPoseReader(navigator)
 
     # ------------------------------------------------------------
     # Default goal (used if no CLI arguments are provided)
@@ -162,10 +220,34 @@ def main():
         goal_yaw_deg = float(sys.argv[3])
 
     # ------------------------------------------------------------
-    # Set initial pose (VERY IMPORTANT for localization)
+    # Initial pose handling
     # ------------------------------------------------------------
-    # This should match the robot's actual position in the map
-    init_pose = build_pose(navigator, -2.0, -0.5, 0.0)
+    # If AMCL already has a valid pose, reuse that localized pose.
+    # If not, fall back to the known TurtleBot3 start pose.
+    if amcl_reader.wait_for_pose(navigator, timeout_sec=2.0):
+        amcl_msg = amcl_reader.latest_amcl_pose
+
+        if amcl_msg is not None:
+            x = amcl_msg.pose.pose.position.x
+            y = amcl_msg.pose.pose.position.y
+            qz = amcl_msg.pose.pose.orientation.z
+            qw = amcl_msg.pose.pose.orientation.w
+            yaw_deg = quaternion_z_w_to_yaw_deg(qz, qw)
+
+            navigator.info(
+                f'AMCL pose detected. Reusing current pose: '
+                f'x={x:.2f}, y={y:.2f}, yaw_deg={yaw_deg:.1f}'
+            )
+
+            init_pose = build_pose(navigator, x, y, yaw_deg)
+        else:
+            navigator.warn('AMCL wait returned True but pose is None (unexpected). Using default.')
+            init_pose = build_pose(navigator, 0.0, 0.0, 0.0)
+    else:
+        navigator.info(
+            'No AMCL pose available yet. Falling back to default initial pose.'
+        )
+        init_pose = build_pose(navigator, 0.0, 0.0, 0.0)
 
     # Send initial pose to AMCL
     navigator.setInitialPose(init_pose)
@@ -173,6 +255,10 @@ def main():
     # Wait until Nav2 stack (planner, controller, AMCL) is ready
     navigator.info('Waiting for Nav2 to become active...')
     navigator.waitUntilNav2Active()
+
+    # Give localization a short moment to settle
+    navigator.info('Waiting for localization to settle...')
+    time.sleep(2.0)
 
     # ------------------------------------------------------------
     # Build goal pose
@@ -222,6 +308,7 @@ def main():
 
     # Shut down ROS 2
     rclpy.shutdown()
+
 
 # ============================================================
 # Python Entry Point Check
