@@ -4,58 +4,62 @@ import math
 import sys
 import time
 
+import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
-import rclpy
 
 
-def yaw_to_quaternion_z_w(yaw: float):
-    qz = math.sin(yaw / 2.0)
-    qw = math.cos(yaw / 2.0)
+def yaw_to_quaternion_z_w(yaw_rad: float):
+    qz = math.sin(yaw_rad / 2.0)
+    qw = math.cos(yaw_rad / 2.0)
     return qz, qw
 
 
-def build_goal(x: float, y: float, yaw_deg: float) -> PoseStamped:
-    goal = PoseStamped()
-    goal.header.frame_id = 'map'
-    goal.header.stamp = rclpy.clock.Clock().now().to_msg()
+def build_pose(navigator: BasicNavigator, x: float, y: float, yaw_deg: float) -> PoseStamped:
+    pose = PoseStamped()
+    pose.header.frame_id = 'map'
+    pose.header.stamp = navigator.get_clock().now().to_msg()
 
-    goal.pose.position.x = x
-    goal.pose.position.y = y
-    goal.pose.position.z = 0.0
+    pose.pose.position.x = x
+    pose.pose.position.y = y
+    pose.pose.position.z = 0.0
 
     yaw_rad = math.radians(yaw_deg)
     qz, qw = yaw_to_quaternion_z_w(yaw_rad)
-    goal.pose.orientation.z = qz
-    goal.pose.orientation.w = qw
+    pose.pose.orientation.z = qz
+    pose.pose.orientation.w = qw
 
-    return goal
+    return pose
 
 
 def main():
     rclpy.init()
-
     navigator = BasicNavigator()
 
-    # Wait until Nav2 is active before sending a goal
+    # Optional CLI:
+    # ros2 run tb3_nav2_slam single_goal_nav goal_x goal_y goal_yaw_deg
+    goal_x = 1.5
+    goal_y = 0.5
+    goal_yaw_deg = 90.0
+
+    if len(sys.argv) == 4:
+        goal_x = float(sys.argv[1])
+        goal_y = float(sys.argv[2])
+        goal_yaw_deg = float(sys.argv[3])
+
+    # Set a known initial pose near the TB3 world start
+    init_pose = build_pose(navigator, -2.0, -0.5, 0.0)
+    navigator.setInitialPose(init_pose)
+
+    navigator.info('Waiting for Nav2 to become active...')
     navigator.waitUntilNav2Active()
 
-    # Default goal if no CLI args are provided
-    x = 1.0
-    y = 0.0
-    yaw_deg = 0.0
+    goal_pose = build_pose(navigator, goal_x, goal_y, goal_yaw_deg)
 
-    # Optional CLI usage:
-    # ros2 run tb3_nav2_slam single_goal_nav 1.0 0.5 90
-    if len(sys.argv) == 4:
-        x = float(sys.argv[1])
-        y = float(sys.argv[2])
-        yaw_deg = float(sys.argv[3])
-
-    goal = build_goal(x, y, yaw_deg)
-
-    navigator.info(f'Sending goal: x={x:.2f}, y={y:.2f}, yaw_deg={yaw_deg:.1f}')
-    navigator.goToPose(goal)
+    navigator.info(
+        f'Sending goal: x={goal_x:.2f}, y={goal_y:.2f}, yaw_deg={goal_yaw_deg:.1f}'
+    )
+    navigator.goToPose(goal_pose)
 
     last_feedback_time = time.time()
 
@@ -78,7 +82,7 @@ def main():
     else:
         navigator.error('Goal returned an unknown result.')
 
-    navigator.lifecycleShutdown()
+    navigator.destroyNode()
     rclpy.shutdown()
 
 
