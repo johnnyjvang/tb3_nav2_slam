@@ -31,6 +31,7 @@ setup(
             'single_goal_nav = tb3_nav2_slam.single_goal_nav:main',
             'single_goal_return = tb3_nav2_slam.single_goal_return:main',
             'goal_from_list = tb3_nav2_slam.goal_from_list:main',
+            'random_safe_goal_explorer = tb3_nav2_slam.random_safe_goal_explorer:main',
         ],
     },
 )
