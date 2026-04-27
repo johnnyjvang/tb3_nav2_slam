@@ -19,6 +19,7 @@
 # - Saves a CSV summary with goal position and time
 # - Optionally rotates the saved PNG map for display alignment
 # - Marks the world origin at x=0, y=0 on the saved PNG
+# - Color-codes start, patrol, final, path, and origin markers
 # ============================================================
 
 import csv
@@ -81,7 +82,7 @@ class TimerBasedPatrolExplorer(Node):
         self.recent_goal_memory = 3
 
         # Delay before selecting the next patrol goal.
-        self.patrol_interval_sec = 10.0
+        self.patrol_interval_sec = 5.0
 
         # Maximum number of random attempts before relaxing location rules.
         self.max_goal_attempts = 300
@@ -508,12 +509,33 @@ class TimerBasedPatrolExplorer(Node):
             extent=[x_min, x_max, y_min, y_max],
         )
 
+        # ------------------------------------------------------------
+        # PLOT PATROL GOALS
+        # ------------------------------------------------------------
         for goal in selected_goals:
             x = goal['x']
             y = goal['y']
             goal_num = goal['goal_num']
 
-            plt.scatter(x, y, s=120, marker=MarkerStyle('o'))
+            if goal_num == 1:
+                marker_color = 'green'
+                marker_label = 'Start goal'
+            elif goal_num == len(selected_goals):
+                marker_color = 'red'
+                marker_label = 'Final goal'
+            else:
+                marker_color = 'blue'
+                marker_label = 'Patrol goal'
+
+            plt.scatter(
+                x,
+                y,
+                s=120,
+                marker=MarkerStyle('o'),
+                color=marker_color,
+                label=marker_label if goal_num in [1, len(selected_goals)] else None,
+            )
+
             plt.text(
                 x,
                 y,
@@ -521,18 +543,38 @@ class TimerBasedPatrolExplorer(Node):
                 fontsize=12,
                 ha='center',
                 va='center',
+                color='white',
             )
 
+        # ------------------------------------------------------------
+        # PLOT PATROL PATH
+        # ------------------------------------------------------------
         if len(selected_goals) > 1:
             path_x = [goal['x'] for goal in selected_goals]
             path_y = [goal['y'] for goal in selected_goals]
-            plt.plot(path_x, path_y, linewidth=2)
+
+            plt.plot(
+                path_x,
+                path_y,
+                linewidth=2,
+                color='blue',
+                alpha=0.7,
+                label='Patrol path',
+            )
 
         # ------------------------------------------------------------
         # SHOW MAP ORIGIN
         # ------------------------------------------------------------
         if self.show_origin_marker:
-            plt.scatter(0.0, 0.0, s=180, marker='x')
+            plt.scatter(
+                0.0,
+                0.0,
+                s=180,
+                marker=MarkerStyle('x'),
+                color='purple',
+                label='Map origin',
+            )
+
             plt.text(
                 0.0,
                 0.0,
@@ -540,6 +582,7 @@ class TimerBasedPatrolExplorer(Node):
                 fontsize=10,
                 ha='left',
                 va='bottom',
+                color='purple',
             )
 
         plt.title('Timer-Based Patrol Goals on Map')
@@ -547,6 +590,7 @@ class TimerBasedPatrolExplorer(Node):
         plt.ylabel('y position (m)')
         plt.grid(True)
         plt.axis('equal')
+        plt.legend()
         plt.tight_layout()
         plt.savefig(png_path, dpi=150)
         plt.close()
