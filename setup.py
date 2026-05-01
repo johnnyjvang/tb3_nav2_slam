@@ -35,6 +35,7 @@ setup(
             'random_safe_goal_explorer = tb3_nav2_slam.random_safe_goal_explorer:main',
             'timer_based_patrol_explorer = tb3_nav2_slam.timer_based_patrol_explorer:main',
             'lidar_following_robot = tb3_nav2_slam.lidar_following_robot:main',
+            'aruco_detector = tb3_nav2_slam.aruco_detector:main',
         ],
     },
 )
