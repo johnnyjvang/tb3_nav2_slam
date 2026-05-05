@@ -132,7 +132,7 @@ ros2 run tb3_nav2_slam aruco_follower
 
 ---
 
-## 🆕 Multi-ArUco Robot Following
+## Multi-ArUco Robot Following
 
 <p align="center">
   <img src="img/aruco_multi_follower.gif" width="700">
@@ -183,19 +183,30 @@ When multiple tags are detected:
 ## How to Run (Multi-ArUco)
 
 Terminal 1:
+```bash
 ros2 launch tb3_nav2_slam custom_tb3_world.launch.py
+```
 
 Terminal 2:
+```bash
 ros2 run turtlebot3_teleop teleop_keyboard --ros-args -r cmd_vel:=/tb3_2/cmd_vel
+```
 
 Terminal 3:
+```bash
 ros2 run tb3_nav2_slam aruco_multi_detector
+```
 
 Terminal 4:
+```bash
 ros2 run tb3_nav2_slam aruco_multi_follower
+```
 
-Terminal 5:
-ros2 run tb3_nav2_slam aruco_detector (only used to see camera view)
+Terminal 5 (only used to see camera view):
+```bash
+ros2 run tb3_nav2_slam aruco_detector 
+```
+
 ---
 
 
