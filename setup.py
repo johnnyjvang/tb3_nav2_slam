@@ -37,6 +37,7 @@ setup(
             'lidar_following_robot = tb3_nav2_slam.lidar_following_robot:main',
             'aruco_detector = tb3_nav2_slam.aruco_detector:main',
             'aruco_pose_tracker = tb3_nav2_slam.aruco_pose_tracker:main',
+            'aruco_follower = tb3_nav2_slam.aruco_follower:main',
         ],
     },
 )
