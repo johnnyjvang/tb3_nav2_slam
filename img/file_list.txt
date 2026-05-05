@@ -1,0 +1,6 @@
+aruco_follower.gif
+random_safe_goal_explorer.gif
+timer_based_patrol_explorer.gif
+aruco_detector.png
+random_safe_goal_map_20260504_212318.png
+timer_based_patrol_map_20260504_212637.png
