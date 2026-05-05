@@ -132,6 +132,73 @@ ros2 run tb3_nav2_slam aruco_follower
 
 ---
 
+## 🆕 Multi-ArUco Robot Following
+
+<p align="center">
+  <img src="img/aruco_multi_follower.gif" width="700">
+</p>
+
+This feature extends the original ArUco pipeline to support **multiple markers and 360° tracking**.
+
+### System Pipeline
+
+Camera -> Multi Detector -> Detection Topic -> Multi Follower -> cmd_vel
+
+### Marker Layout
+
+0 = back  
+1 = front  
+2 = left  
+3 = right  
+
+### Multi-Detector Logic
+
+- Subscribes to: `/tb3_1/camera/image`
+- Detects all visible markers
+- Estimates pose using OpenCV
+- Publishes structured detection data
+
+### Multi-Follower Logic
+
+Instead of selecting the closest tag, the system uses priority:
+
+1. back tag  
+2. left/right tags  
+3. front tag  
+
+This allows:
+- stable tracking when multiple tags are visible
+- smooth transitions during robot rotation
+- realistic behavior for real-world deployment
+
+### Handling Multiple Visible Tags
+
+When multiple tags are detected:
+- system selects best candidate based on alignment and priority
+- avoids rapid switching between tags
+- maintains smooth motion control
+
+---
+
+## How to Run (Multi-ArUco)
+
+Terminal 1:
+ros2 launch tb3_nav2_slam custom_tb3_world.launch.py
+
+Terminal 2:
+ros2 run turtlebot3_teleop teleop_keyboard --ros-args -r cmd_vel:=/tb3_2/cmd_vel
+
+Terminal 3:
+ros2 run tb3_nav2_slam aruco_multi_detector
+
+Terminal 4:
+ros2 run tb3_nav2_slam aruco_multi_follower
+
+Terminal 5:
+ros2 run tb3_nav2_slam aruco_detector (only used to see camera view)
+---
+
+
 ## Repository Structure
 
 ```text
