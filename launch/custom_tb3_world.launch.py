@@ -123,7 +123,7 @@ def generate_launch_description():
             name='tb3_1_cmd_vel_bridge',
             output='screen',
             arguments=[
-                '/tb3_1/cmd_vel@geometry_msgs/msg/Twist@gz.msgs.Twist',
+                '/tb3_1/cmd_vel@geometry_msgs/msg/TwistStamped@gz.msgs.Twist',
             ],
         ),
 
@@ -177,7 +177,7 @@ def generate_launch_description():
             name='tb3_2_cmd_vel_bridge',
             output='screen',
             arguments=[
-                '/tb3_2/cmd_vel@geometry_msgs/msg/Twist@gz.msgs.Twist',
+                '/tb3_2/cmd_vel@geometry_msgs/msg/TwistStamped@gz.msgs.Twist',
             ],
         ),
 
