@@ -38,6 +38,8 @@ setup(
             'aruco_detector = tb3_nav2_slam.aruco_detector:main',
             'aruco_pose_tracker = tb3_nav2_slam.aruco_pose_tracker:main',
             'aruco_follower = tb3_nav2_slam.aruco_follower:main',
+            "aruco_multi_detector = tb3_nav2_slam.aruco_multi_detector:main",
+            "aruco_multi_follower = tb3_nav2_slam.aruco_multi_follower:main",
         ],
     },
 )
