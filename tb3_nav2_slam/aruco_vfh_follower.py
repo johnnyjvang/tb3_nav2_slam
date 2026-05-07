@@ -11,9 +11,9 @@ from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 
 
-class ArucoUpgradedMultiFollower(Node):
+class ArucoVfhFollower(Node):
     def __init__(self) -> None:
-        super().__init__("aruco_upgraded_multi_follower")
+        super().__init__("aruco_vfh_follower")
 
         self.declare_parameter("detection_topic", "/aruco_multi/detections")
         self.declare_parameter("cmd_vel_topic", "/tb3_1/cmd_vel")
@@ -41,12 +41,17 @@ class ArucoUpgradedMultiFollower(Node):
         self.declare_parameter("emergency_stop_distance", 0.35)
         self.declare_parameter("front_angle_deg", 30.0)
 
-        # Avoidance parameters for simple left/right obstacle steering
-        # If the front is blocked but not in emergency range, turn toward
-        # the side with more open space
+        # VFH-lite avoidance parameters
+        # VFH checks many LiDAR angle sectors instead of only left vs right
         self.declare_parameter("avoidance_distance", 0.55)
-        self.declare_parameter("avoidance_turn_speed", 0.35)
         self.declare_parameter("avoidance_linear_speed", 0.02)
+        self.declare_parameter("vfh_sector_deg", 10.0)
+        self.declare_parameter("vfh_angle_limit_deg", 90.0)
+        self.declare_parameter("vfh_clearance_distance", 0.40)
+        self.declare_parameter("vfh_turn_gain", 1.25)
+        self.declare_parameter("camera_horizontal_fov_deg", 60.0)
+
+        # Side zones are still kept for recovery backup decisions
         self.declare_parameter("side_angle_min_deg", 30.0)
         self.declare_parameter("side_angle_max_deg", 90.0)
 
@@ -83,19 +88,30 @@ class ArucoUpgradedMultiFollower(Node):
         )
         self.front_angle_deg = self.get_float_parameter("front_angle_deg", 30.0)
 
-        # Load left/right avoidance settings from ROS parameters
+        # Load VFH-lite settings from ROS parameters
         self.avoidance_distance = self.get_float_parameter(
             "avoidance_distance",
             0.55,
-        )
-        self.avoidance_turn_speed = self.get_float_parameter(
-            "avoidance_turn_speed",
-            0.35,
         )
         self.avoidance_linear_speed = self.get_float_parameter(
             "avoidance_linear_speed",
             0.02,
         )
+        self.vfh_sector_deg = self.get_float_parameter("vfh_sector_deg", 10.0)
+        self.vfh_angle_limit_deg = self.get_float_parameter(
+            "vfh_angle_limit_deg",
+            90.0,
+        )
+        self.vfh_clearance_distance = self.get_float_parameter(
+            "vfh_clearance_distance",
+            0.40,
+        )
+        self.vfh_turn_gain = self.get_float_parameter("vfh_turn_gain", 1.25)
+        self.camera_horizontal_fov_deg = self.get_float_parameter(
+            "camera_horizontal_fov_deg",
+            60.0,
+        )
+
         self.side_angle_min_deg = self.get_float_parameter(
             "side_angle_min_deg",
             30.0,
@@ -131,9 +147,13 @@ class ArucoUpgradedMultiFollower(Node):
         self.front_obstacle_distance = None
 
         # Track closest obstacle distances on the left and right
-        # These are used to decide which way to turn around an obstacle
+        # These are used by recovery backup when the robot gets too close
         self.left_obstacle_distance = None
         self.right_obstacle_distance = None
+
+        # VFH sector list stores angle and clearance values from LiDAR
+        # Each sector represents a possible steering direction
+        self.vfh_sectors = []
 
         self.det_sub = self.create_subscription(
             String,
@@ -158,7 +178,7 @@ class ArucoUpgradedMultiFollower(Node):
 
         self.timer = self.create_timer(0.1, self.watchdog_callback)
 
-        self.get_logger().info("ArUco upgraded multi-follower started")
+        self.get_logger().info("ArUco VFH follower started")
         self.get_logger().info(f"Subscribing to: {self.detection_topic}")
         self.get_logger().info(f"Subscribing to LiDAR: {self.scan_topic}")
         self.get_logger().info(f"Publishing TwistStamped to: {self.cmd_vel_topic}")
@@ -170,20 +190,19 @@ class ArucoUpgradedMultiFollower(Node):
         )
         self.get_logger().info(f"Front LiDAR angle: +/- {self.front_angle_deg:.1f} deg")
 
-        # Log avoidance parameters so tuning is visible at runtime
-        self.get_logger().info(
-            f"Avoidance distance: {self.avoidance_distance:.2f} m"
-        )
-        self.get_logger().info(
-            f"Avoidance turn speed: {self.avoidance_turn_speed:.2f} rad/s"
-        )
+        # Log VFH parameters so tuning is visible at runtime
+        self.get_logger().info(f"Avoidance distance: {self.avoidance_distance:.2f} m")
         self.get_logger().info(
             f"Avoidance linear speed: {self.avoidance_linear_speed:.2f} m/s"
         )
+        self.get_logger().info(f"VFH sector size: {self.vfh_sector_deg:.1f} deg")
         self.get_logger().info(
-            f"Side LiDAR zones: {self.side_angle_min_deg:.1f}"
-            f" to {self.side_angle_max_deg:.1f} deg"
+            f"VFH angle limit: +/- {self.vfh_angle_limit_deg:.1f} deg"
         )
+        self.get_logger().info(
+            f"VFH clearance distance: {self.vfh_clearance_distance:.2f} m"
+        )
+        self.get_logger().info(f"VFH turn gain: {self.vfh_turn_gain:.2f}")
 
         # Log recovery parameters so tuning is visible at runtime
         self.get_logger().info(
@@ -307,8 +326,8 @@ class ArucoUpgradedMultiFollower(Node):
         return linear_x, False
 
     def get_clearance_value(self, distance: float | None) -> float:
-        # Convert missing LiDAR data into a large value
-        # This lets the avoidance logic compare left vs right safely
+        # Convert missing LiDAR data into zero clearance
+        # This prevents unknown space from being treated as safely open
         if distance is None:
             return 0.0
 
@@ -336,46 +355,151 @@ class ArucoUpgradedMultiFollower(Node):
         angular_z = -abs(self.recovery_turn_speed)
         return linear_x, angular_z, True, "RECOVERY_BACKUP_RIGHT"
 
-    def apply_lidar_avoidance(
+    def get_target_heading_deg(self, error_x: float) -> float:
+        # Convert ArUco camera error into an approximate desired heading
+        # error_x is normalized from left to right in the image
+        # Negative error_x means the tag is left of center
+        half_fov = self.camera_horizontal_fov_deg / 2.0
+
+        target_heading_deg = -error_x * half_fov
+
+        return self.clamp(
+            target_heading_deg,
+            -self.vfh_angle_limit_deg,
+            self.vfh_angle_limit_deg,
+        )
+
+    def build_vfh_sectors(self, msg: LaserScan) -> list[dict]:
+        # Build VFH sectors from the LiDAR scan
+        # Each sector stores the closest obstacle in that angle window
+
+        sector_count = int((2.0 * self.vfh_angle_limit_deg) / self.vfh_sector_deg) + 1
+        sector_data = []
+
+        start_angle_deg = -self.vfh_angle_limit_deg
+
+        for sector_index in range(sector_count):
+            center_deg = start_angle_deg + (sector_index * self.vfh_sector_deg)
+            sector_data.append(
+                {
+                    "center_deg": center_deg,
+                    "min_distance": None,
+                }
+            )
+
+        for index, distance in enumerate(msg.ranges):
+            if not math.isfinite(distance):
+                continue
+
+            if distance < msg.range_min or distance > msg.range_max:
+                continue
+
+            angle_rad = msg.angle_min + (index * msg.angle_increment)
+            angle_deg = math.degrees(angle_rad)
+
+            # Normalize angle into -180 to 180 degrees
+            while angle_deg > 180.0:
+                angle_deg -= 360.0
+
+            while angle_deg < -180.0:
+                angle_deg += 360.0
+
+            if angle_deg < -self.vfh_angle_limit_deg:
+                continue
+
+            if angle_deg > self.vfh_angle_limit_deg:
+                continue
+
+            sector_index = int(
+                round((angle_deg + self.vfh_angle_limit_deg) / self.vfh_sector_deg)
+            )
+            sector_index = max(0, min(sector_index, sector_count - 1))
+
+            current_min = sector_data[sector_index]["min_distance"]
+
+            if current_min is None or distance < current_min:
+                sector_data[sector_index]["min_distance"] = float(distance)
+
+        return sector_data
+
+    def choose_vfh_sector(self, target_heading_deg: float) -> dict | None:
+        # Choose the open sector closest to the ArUco target direction
+        # This replaces hard left/right avoidance with many possible headings
+
+        if not self.vfh_sectors:
+            return None
+
+        open_sectors = []
+
+        for sector in self.vfh_sectors:
+            min_distance = sector["min_distance"]
+
+            if min_distance is None:
+                continue
+
+            if min_distance >= self.vfh_clearance_distance:
+                open_sectors.append(sector)
+
+        if not open_sectors:
+            return None
+
+        return min(
+            open_sectors,
+            key=lambda sector: abs(sector["center_deg"] - target_heading_deg),
+        )
+
+    def apply_vfh_avoidance(
         self,
         linear_x: float,
         angular_z: float,
-    ) -> tuple[float, float, bool, str]:
-        # Avoid-left / avoid-right layer
+        error_x: float,
+    ) -> tuple[float, float, bool, str, float | None]:
+        # VFH-lite avoidance layer
         #
         # Priority
-        # 1 Emergency stop if front obstacle is too close
-        # 2 If front is blocked but not critical, turn toward clearer side
-        # 3 If front is clear, keep normal ArUco following command
+        # 1 Recovery backup if obstacle is too close
+        # 2 Normal follow if front is clear
+        # 3 Choose safest LiDAR sector closest to ArUco target direction
 
         linear_x, emergency_stop_active = self.apply_lidar_emergency_stop(linear_x)
 
         if emergency_stop_active:
-            # Recovery backup replaces hard stop when enabled
-            # This helps the robot escape if it gets too close to a pole or wall
-            return self.apply_recovery_backup()
+            return (*self.apply_recovery_backup(), None)
 
         if self.front_obstacle_distance is None:
-            return linear_x, angular_z, False, "FOLLOW"
+            return linear_x, angular_z, False, "FOLLOW", None
 
         if self.front_obstacle_distance >= self.avoidance_distance:
-            return linear_x, angular_z, False, "FOLLOW"
+            return linear_x, angular_z, False, "FOLLOW", None
 
-        left_clearance = self.get_clearance_value(self.left_obstacle_distance)
-        right_clearance = self.get_clearance_value(self.right_obstacle_distance)
+        target_heading_deg = self.get_target_heading_deg(error_x)
+        best_sector = self.choose_vfh_sector(target_heading_deg)
 
-        # Limit forward motion while avoiding
-        # This keeps the robot from pushing into the obstacle while turning
+        if best_sector is None:
+            # If no safe sector exists, use recovery backup as fallback
+            return (*self.apply_recovery_backup(), None)
+
+        selected_heading_deg = float(best_sector["center_deg"])
+        selected_heading_rad = math.radians(selected_heading_deg)
+
+        # Limit forward speed during VFH steering
         linear_x = min(linear_x, self.avoidance_linear_speed)
 
-        if left_clearance > right_clearance:
-            # Left side is more open so rotate left
-            angular_z = abs(self.avoidance_turn_speed)
-            return linear_x, angular_z, False, "AVOID_LEFT"
+        # Turn toward the selected safe sector
+        angular_z = self.vfh_turn_gain * selected_heading_rad
 
-        # Right side is more open or tied so rotate right
-        angular_z = -abs(self.avoidance_turn_speed)
-        return linear_x, angular_z, False, "AVOID_RIGHT"
+        angular_z = self.clamp(
+            angular_z,
+            -self.max_angular_speed,
+            self.max_angular_speed,
+        )
+
+        if selected_heading_deg >= 0.0:
+            mode = "VFH_LEFT"
+        else:
+            mode = "VFH_RIGHT"
+
+        return linear_x, angular_z, False, mode, selected_heading_deg
 
     def scan_callback(self, msg: LaserScan) -> None:
         # Read LiDAR sectors and save closest valid distances
@@ -388,6 +512,9 @@ class ArucoUpgradedMultiFollower(Node):
         valid_left_ranges = []
         valid_right_ranges = []
 
+        # Build VFH sectors from the full front LiDAR region
+        self.vfh_sectors = self.build_vfh_sectors(msg)
+
         for index, distance in enumerate(msg.ranges):
             if not math.isfinite(distance):
                 continue
@@ -396,6 +523,13 @@ class ArucoUpgradedMultiFollower(Node):
                 continue
 
             angle = msg.angle_min + (index * msg.angle_increment)
+
+            # Normalize angle into -pi to pi radians
+            while angle > math.pi:
+                angle -= 2.0 * math.pi
+
+            while angle < -math.pi:
+                angle += 2.0 * math.pi
 
             if abs(angle) <= front_angle_rad:
                 valid_front_ranges.append(float(distance))
@@ -477,9 +611,9 @@ class ArucoUpgradedMultiFollower(Node):
                 error_x,
             )
 
-            # Apply emergency stop first then avoid-left/right if front is blocked
-            linear_x, angular_z, emergency_stop_active, avoid_mode = (
-                self.apply_lidar_avoidance(linear_x, angular_z)
+            # Apply emergency stop first then VFH steering if front is blocked
+            linear_x, angular_z, emergency_stop_active, avoid_mode, vfh_heading = (
+                self.apply_vfh_avoidance(linear_x, angular_z, error_x)
             )
 
             self.publish_cmd(linear_x, angular_z)
@@ -495,7 +629,6 @@ class ArucoUpgradedMultiFollower(Node):
                 else "None"
             )
 
-            # Add left/right obstacle distances and avoidance mode to logs
             left_distance_text = (
                 f"{self.left_obstacle_distance:.3f}"
                 if self.left_obstacle_distance is not None
@@ -504,6 +637,11 @@ class ArucoUpgradedMultiFollower(Node):
             right_distance_text = (
                 f"{self.right_obstacle_distance:.3f}"
                 if self.right_obstacle_distance is not None
+                else "None"
+            )
+            vfh_heading_text = (
+                f"{vfh_heading:.1f}"
+                if vfh_heading is not None
                 else "None"
             )
 
@@ -519,6 +657,7 @@ class ArucoUpgradedMultiFollower(Node):
                 f"front_obstacle={front_distance_text} m | "
                 f"left_obstacle={left_distance_text} m | "
                 f"right_obstacle={right_distance_text} m | "
+                f"vfh_heading={vfh_heading_text} deg | "
                 f"mode={avoid_mode} | "
                 f"estop={emergency_stop_active} | "
                 f"cmd_linear={linear_x:.3f} | "
@@ -566,7 +705,7 @@ class ArucoUpgradedMultiFollower(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
 
-    node = ArucoUpgradedMultiFollower()
+    node = ArucoVfhFollower()
 
     try:
         rclpy.spin(node)

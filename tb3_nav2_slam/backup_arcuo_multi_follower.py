@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 
+# ============================================================
+# Code is Purely back version of aruco_multi_follower.py
+# Does not contain left/right avoidance
+# ============================================================
+
 import json
 import math
 from typing import Any

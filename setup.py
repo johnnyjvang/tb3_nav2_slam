@@ -41,6 +41,8 @@ setup(
             "aruco_multi_detector = tb3_nav2_slam.aruco_multi_detector:main",
             "aruco_multi_follower = tb3_nav2_slam.aruco_multi_follower:main",
             "aruco_upgraded_multi_follower = tb3_nav2_slam.aruco_upgraded_multi_follower:main",
+            "aruco_front_detector_only = tb3_nav2_slam.aruco_front_detector_only:main",
+            "aruco_vfh_follower = tb3_nav2_slam.aruco_vfh_follower:main",
         ],
     },
 )
