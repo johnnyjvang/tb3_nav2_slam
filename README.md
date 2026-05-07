@@ -295,7 +295,7 @@ ros2 run tb3_nav2_slam aruco_upgraded_multi_follower \
 
 Terminal 5 (only used to see camera view):
 ```bash
-ros2 run tb3_nav2_slam aruco_front_detector 
+ros2 run tb3_nav2_slam aruco_front_detector_only 
 ```
 
 ---
@@ -368,7 +368,7 @@ ros2 run tb3_nav2_slam aruco_vfh_follower \
 ```
 Terminal 5 (only used to see camera view):
 ```bash
-ros2 run tb3_nav2_slam aruco_front_detector 
+ros2 run tb3_nav2_slam aruco_front_detector_only 
 ```
 
 ---
